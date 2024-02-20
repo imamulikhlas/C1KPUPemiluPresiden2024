@@ -41,8 +41,33 @@ const readJsonFile = (filePath) => {
   });
 };
 
+// Fungsi untuk menambahkan data error ke dalam file JSON dengan timestamp
+const appendErrorData = (tpsCode, errorCount) => {
+  const errorFilePath = path.join(__dirname, 'error-data.json');
+  fs.readFile(errorFilePath, (err, data) => {
+    let errorData = {};
+    if (!err && data) {
+      errorData = JSON.parse(data);
+    } else {
+      errorData['tps-error'] = {};
+    }
+    if (!errorData['tps-error'][tpsCode]) {
+      errorData['tps-error'][tpsCode] = [];
+    }
+    errorData['tps-error'][tpsCode].push(errorCount);
+
+    // Menambahkan timestamp
+    const timestamp = new Date().toLocaleString('en-US', { timeZone: 'Asia/Jakarta' });
+    errorData['last-updated'] = timestamp;
+
+    fs.writeFile(errorFilePath, JSON.stringify(errorData, null, 2), (err) => {
+      if (err) console.log('Error saving error data:', err);
+    });
+  });
+};
+
 // Fungsi untuk mengunjungi setiap halaman dan mengunduh gambar
-const processTps = async (browser, tpsCode, base, regionCode1, regionCode2, regionCode3, countIndex) => {
+const processTps = async (browser, tpsCode, base, regionCode1, regionCode2, regionCode3, countIndex, updateProgress) => {
   const page = await browser.newPage();
   const targetUrl = `${base}${regionCode1}/${regionCode2}/${regionCode3}/${tpsCode}/${tpsCode}00${countIndex}`;
   try {
@@ -63,10 +88,13 @@ const processTps = async (browser, tpsCode, base, regionCode1, regionCode2, regi
       await downloadImage(imageUrl, outputPath);
     } else {
       console.log('Gambar tidak ditemukan untuk URL:', targetUrl);
+      appendErrorData(tpsCode, countIndex); // Log error jika gambar tidak ditemukan
     }
   } catch (error) {
     console.log('Error processing URL:', targetUrl, error);
+    appendErrorData(tpsCode, countIndex); // Log error untuk setiap jenis error
   } finally {
+    updateProgress();
     await page.close();
   }
 };
@@ -76,6 +104,15 @@ const main = async () => {
   const browser = await puppeteer.launch({ headless: true });
   const tpsData = await readJsonFile('tps.json');
   const base = 'https://pemilu2024.kpu.go.id/pilpres/hitung-suara/';
+  let completedTasks = 0;
+  const totalTasks = Object.values(tpsData.tps).reduce((acc, curr) => acc + curr[0], 0);
+
+  const updateProgress = () => {
+    completedTasks++;
+    const progress = (completedTasks / totalTasks) * 100;
+    console.log(`Progress: ${progress.toFixed(2)}% completed.`);
+  };
+
   const tasks = [];
 
   for (const [tpsCode, counts] of Object.entries(tpsData.tps)) {
@@ -83,12 +120,10 @@ const main = async () => {
     const regionCode2 = tpsCode.substring(0, 4);
     const regionCode3 = tpsCode.substring(0, 6);
     for (let countIndex = 1; countIndex <= counts[0]; countIndex++) {
-      // Membatasi jumlah tugas paralel untuk menghindari kelebihan beban
+      tasks.push(processTps(browser, tpsCode, base, regionCode1, regionCode2, regionCode3, countIndex, updateProgress));
       if (tasks.length >= 5) {
-        await Promise.all(tasks);
-        tasks.length = 0; // Bersihkan array setelah tugas selesai
+        await Promise.all(tasks.splice(0, 5));
       }
-      tasks.push(processTps(browser, tpsCode, base, regionCode1, regionCode2, regionCode3, countIndex));
     }
   }
 
